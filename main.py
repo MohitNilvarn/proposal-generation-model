@@ -323,55 +323,6 @@ async def root():
         }
     }
 
-@app.post("/upload-file", response_model=UploadResponse)
-async def upload_file(file: UploadFile = File(...)):
-    try:
-        if not file.filename.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="Only PDF files supported")
-
-        # Save uploaded file to a temporary location accessible by backend
-        temp_filename = f"uploads/{uuid.uuid4().hex}_{file.filename}"
-        os.makedirs(os.path.dirname(temp_filename), exist_ok=True)
-
-        with open(temp_filename, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-
-        # Reuse your upload logic: load temp_filename
-        loader = PyPDFLoader(temp_filename)
-        docs = loader.load()
-        if not docs:
-            raise HTTPException(status_code=400, detail="No content extracted from PDF")
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,
-            chunk_overlap=250,
-            separators=["\n\n", "\n", ".", "!", "?"]
-        )
-        splits = text_splitter.split_documents(docs)
-
-        vector_db = SupabaseVectorStore.from_documents(
-            documents=splits,
-            embedding=embeddings,
-            client=supabase,
-            table_name="embeddings",
-            chunk_size=5
-        )
-
-        # Clean up temp file
-        try:
-            os.remove(temp_filename)
-        except:
-            pass
-
-        return {
-            "status": "success",
-            "total_chunks": len(splits),
-            "message": f"Uploaded {len(splits)} chunks successfully"
-        }
-
-    except Exception as e:
-        print("Error in upload_file:", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
 # Enhanced query endpoint with intent extraction
 @app.post("/ask", response_model=AskResponse)
 async def ask(query: Query):
