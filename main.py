@@ -4,7 +4,8 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import SupabaseVectorStore
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
+
 from fastapi.middleware.cors import CORSMiddleware
 from supabase.client import create_client
 import os
