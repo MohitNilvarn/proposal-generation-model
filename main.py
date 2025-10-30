@@ -61,13 +61,14 @@ Example:
 }
 """
 
-proposal_prompt_template = """You are a proposal generator. Use ONLY the context provided below to generate a professional proposal.
+proposal_prompt_template = """You are a proposal generator. Use ONLY the context provided below to generate a professional project proposal.
 
 Rules:
-1. Use only information from context — do not invent new details.
-2. Remove any "[Information not available in knowledge base]" phrases.
-3. Do not add any closing marketing or summary sentences.
-4. Keep it formal, structured, and clear.
+1. Use only information from the provided context — never invent new details.
+2. Do NOT include any sections titled "Conclusion", "Summary", or similar endings.
+3. Do NOT add closing remarks like "We look forward..." or "This proposal provides..."
+4. Remove any placeholder text like "[Information not available in knowledge base]".
+5. The proposal should end naturally after the last relevant section (e.g., Timeline, Pricing, or Maintenance).
 
 ---
 
@@ -79,8 +80,9 @@ Rules:
 
 ---
 
-Generate the full project proposal below:
+Generate the complete proposal below:
 """
+
 
 intent_prompt = PromptTemplate(
     template=intent_extraction_prompt,
@@ -173,8 +175,11 @@ def ask(query: Query):
         response = llm.invoke(filled_prompt)
 
         # Remove unwanted trailing lines or extra "[Information...]" remnants
-        cleaned = re.sub(r'\[Information[^\]]*\]', '', response.content)
+        cleaned = response.content
+        cleaned = re.sub(r'\[Information[^\]]*\]', '', cleaned)
+        cleaned = re.sub(r'(?i)(##?\s*Conclusion.*|##?\s*Summary.*|This proposal provides.*|We look forward.*)$','',cleaned,flags=re.DOTALL)
         cleaned = re.sub(r'\n{2,}', '\n\n', cleaned).strip()
+
 
         print("✅ Proposal generated successfully.")
         return {"answer": cleaned, "extracted_intent": intent}
