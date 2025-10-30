@@ -40,6 +40,17 @@ if not GOOGLE_DOC_ID:
 
 if not GOOGLE_SERVICE_ACCOUNT_JSON:
     raise ValueError("Missing GOOGLE_SERVICE_ACCOUNT_JSON in environment (service account credentials)")
+# Decode base64 if the JSON is encoded (Render env safe)
+try:
+    if GOOGLE_SERVICE_ACCOUNT_JSON.strip().startswith("{"):
+        # it's already raw JSON
+        pass
+    else:
+        import base64
+        GOOGLE_SERVICE_ACCOUNT_JSON = base64.b64decode(GOOGLE_SERVICE_ACCOUNT_JSON).decode("utf-8")
+except Exception as e:
+    raise ValueError(f"Failed to decode GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+
 
 # ========== FASTAPI ==========
 app = FastAPI(title="Proposal Generator - Google Doc KB")
@@ -289,7 +300,8 @@ def ask(query: Query):
         requirements = format_requirements(intent, query)
 
         # retrieve relevant documents
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
+        retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 8, "score_threshold": 0.2})
+
         # use invoke on retriever (newer LangChain API)
         related_docs = retriever.invoke(combined_text)
 
