@@ -11,12 +11,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# LangChain imports
+# ✅ Correct imports for new LangChain
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.schema import Document
+from langchain_core.documents import Document  # ✅ FIXED import
 
 # Google API imports
 from google.oauth2 import service_account
@@ -30,7 +30,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 GOOGLE_DOC_ID = os.getenv("GOOGLE_DOC_ID")
 
 CHROMA_DIR = "chroma_store"
-EMBEDDING_MODEL = "text-embedding-3-large"  # better accuracy
+EMBEDDING_MODEL = "text-embedding-3-large"
 LLM_MODEL = "gpt-4o-mini"
 
 if not OPENAI_API_KEY:
@@ -62,7 +62,7 @@ app = FastAPI(title="Proposal Generator - Google Doc KB")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for now
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -116,7 +116,6 @@ proposal_prompt = PromptTemplate(template=proposal_prompt_template, input_variab
 
 # ========== Google Docs Helpers ==========
 def fetch_google_doc_text(document_id: str, creds) -> str:
-    """Fetch text from Google Docs."""
     service = build("docs", "v1", credentials=creds, cache_discovery=False)
     doc = service.documents().get(documentId=document_id).execute()
     content = []
