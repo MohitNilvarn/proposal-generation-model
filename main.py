@@ -170,7 +170,7 @@ async def ask(query: Query):
 
         # Retrieve matching context from Chroma
         retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
-        related_docs = retriever.get_relevant_documents(full_query_text)
+        related_docs = retriever.invoke(full_query_text)
         if not related_docs:
             return {"answer": "[Information not available in knowledge base]", "extracted_intent": intent}
 
