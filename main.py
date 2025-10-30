@@ -1,194 +1,313 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_community.vectorstores import Chroma
-from langchain_core.prompts import PromptTemplate
-from fastapi.middleware.cors import CORSMiddleware
-import os, re, json
+# main.py
+import os
+import re
+import json
+import shutil
 from dotenv import load_dotenv
+from typing import Optional, List
 
-# ========== LOAD ENV ==========
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+# LangChain / OpenAI imports
+from langchain_core.prompts import PromptTemplate
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_community.document_loaders import PyPDFLoader  # kept for fallback
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# Google API
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+# Load environment
 load_dotenv()
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key:
-    raise ValueError("Missing OPENAI_API_KEY in .env")
 
-# ========== PDF CONFIG ==========
-PDF_PATH = "Proposal/Proposal Knowledge Base (1).pdf"
+# ========== CONFIG ==========
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")  # either JSON string or path to file
+GOOGLE_DOC_ID = os.getenv("GOOGLE_DOC_ID")  # set to: 1NHtKV_D4QBdzLjOQ_n4EKgpu-upjFOCN1OjYWzYqmkA
+CHROMA_DIR = "chroma_store"
+EMBEDDING_MODEL = "text-embedding-3-large"  # larger embedding for better accuracy
+LLM_MODEL = "gpt-4o-mini"
 
-# ========== FASTAPI APP ==========
-app = FastAPI(title="Proposal Generator API")
+if not OPENAI_API_KEY:
+    raise ValueError("Missing OPENAI_API_KEY in environment")
+
+if not GOOGLE_DOC_ID:
+    raise ValueError("Missing GOOGLE_DOC_ID in environment")
+
+if not GOOGLE_SERVICE_ACCOUNT_JSON:
+    raise ValueError("Missing GOOGLE_SERVICE_ACCOUNT_JSON in environment (service account credentials)")
+
+# ========== FASTAPI ==========
+app = FastAPI(title="Proposal Generator - Google Doc KB")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow frontend
+    allow_origins=["*"],  # tighten for production: add your front-end domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ========== MODELS ==========
+# ========== Pydantic Models ==========
 class Query(BaseModel):
-    question: str
+    question: Optional[str] = None
+    industry: Optional[str] = None
+    ecommerce_type: Optional[str] = None
+    platforms: Optional[List[str]] = None
+    tech_focus: Optional[str] = None
+    service_type: Optional[str] = None
+    budget_range: Optional[str] = None
 
+class AskResponse(BaseModel):
+    answer: str
+    extracted_intent: dict | None = None
 
-# ========== PROMPTS ==========
+# ========== Prompts ==========
+intent_extraction_prompt = """You are an expert at extracting structured information from user requests.
 
-intent_extraction_prompt = """You are an expert at extracting structured information from proposal requests.
+USER INPUT:
+{question}
 
-Analyze the user's request and extract the following details as JSON:
-1. Platforms (Website, App, Admin Panel, etc.)
-2. Vendor Type (Single Vendor, Multi Vendor)
-3. Project Types (Software Development, AI Automations)
-4. Automations (Manychats, CRM, AI Calling)
-5. Platform Type (Property Listing, Ecommerce, etc.)
-6. Technology (Shopify, Next Js, Wordpress)
-7. Services (UI UX, Website Development, App Development, etc.)
-
-Return only JSON, nothing else.
-
-Example:
-{
-  "platforms": ["Website", "Admin Panel"],
-  "vendor_type": "Single Vendor",
-  "project_types": ["Software Development"],
-  "automations": null,
-  "platform_type": "Property Listing",
-  "tech_stack": "Next Js",
-  "services": ["UI UX Designs", "Website Development"]
-}
+Return pure JSON with keys:
+platforms, vendor_type, project_types, automations, platform_type, tech_stack, services, industry, ecommerce_type, budget_range.
+Use null for missing values.
 """
 
-proposal_prompt_template = """You are a proposal generator. Use ONLY the context provided below to generate a professional project proposal.
+proposal_prompt_template = """You are a proposal generation assistant. Use ONLY the provided context (from the knowledge base) to produce a professional proposal.
 
-Rules:
-1. Use only information from the provided context — never invent new details.
-2. Do NOT include any sections titled "Conclusion", "Summary", or similar endings.
-3. Do NOT add closing remarks like "We look forward..." or "This proposal provides..."
-4. Remove any placeholder text like "[Information not available in knowledge base]".
-5. The proposal should end naturally after the last relevant section (e.g., Timeline, Pricing, or Maintenance).
+RULES (mandatory):
+1. Do NOT invent facts.
+2. Do NOT include placeholder phrases like "[Information not available in knowledge base]".
+3. Do NOT add any extra closing paragraphs, conclusions, or marketing lines (e.g., "We look forward...").
+4. If a required item is not present in the context, simply omit it (do not invent).
+5. Keep the text formal and structured (sections and bullet lists allowed).
 
----
-
-**CONTEXT:**
+CONTEXT:
 {context}
 
-**PROJECT REQUIREMENTS:**
+REQUIREMENTS:
 {requirements}
 
----
-
-Generate the complete proposal below:
+Now generate the complete proposal below:
 """
 
+intent_prompt = PromptTemplate(template=intent_extraction_prompt, input_variables=["question"])
+proposal_prompt = PromptTemplate(template=proposal_prompt_template, input_variables=["context", "requirements"])
 
-intent_prompt = PromptTemplate(
-    template=intent_extraction_prompt,
-    input_variables=["question"]
-)
-
-proposal_prompt = PromptTemplate(
-    template=proposal_prompt_template,
-    input_variables=["context", "requirements"]
-)
-
-# ========== LOAD KNOWLEDGE BASE ==========
-
-print("📄 Loading knowledge base from", PDF_PATH)
-loader = PyPDFLoader(PDF_PATH)
-docs = loader.load()
-
-splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-chunks = splitter.split_documents(docs)
-print(f"✅ Loaded {len(chunks)} chunks.")
-
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
-vectorstore = Chroma.from_documents(chunks, embeddings, persist_directory="./chroma_store")
-vectorstore.persist()
-print("✅ Chroma vectorstore initialized.")
-
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_api_key)
-
-
-# ========== HELPER FUNCTIONS ==========
-
-def extract_intent(question: str) -> dict:
+# ========== Google Docs helpers ==========
+def load_service_account_credentials(json_input: str):
+    """
+    Accepts either:
+     - path to a service account JSON file, or
+     - the full JSON as a string (recommended for Render env var)
+    Returns google.oauth2.service_account.Credentials
+    """
     try:
-        filled_prompt = intent_prompt.format(question=question)
-        response = llm.invoke(filled_prompt)
-        content = response.content.strip()
-        match = re.search(r'\{.*\}', content, re.DOTALL)
-        if match:
-            return json.loads(match.group())
+        # if it's a path to a file
+        if os.path.exists(json_input):
+            creds = service_account.Credentials.from_service_account_file(json_input, scopes=["https://www.googleapis.com/auth/documents.readonly"])
+            return creds
+        # else treat as JSON string
+        info = json.loads(json_input)
+        creds = service_account.Credentials.from_service_account_info(info, scopes=["https://www.googleapis.com/auth/documents.readonly"])
+        return creds
+    except Exception as e:
+        raise RuntimeError(f"Failed to load service account credentials: {e}")
+
+def fetch_google_doc_text(document_id: str, creds: service_account.Credentials) -> str:
+    """
+    Fetches document structure and converts it to plain text.
+    It handles paragraphs, tables (rows/cols), and text runs.
+    """
+    service = build("docs", "v1", credentials=creds, cache_discovery=False)
+    doc = service.documents().get(documentId=document_id).execute()
+    body = doc.get("body", {})
+    content = []
+
+    def read_structural_elements(elements):
+        for el in elements:
+            if "paragraph" in el:
+                parts = el["paragraph"].get("elements", [])
+                para_text = []
+                for p in parts:
+                    text_run = p.get("textRun")
+                    if text_run and "content" in text_run:
+                        para_text.append(text_run["content"])
+                if para_text:
+                    content.append("".join(para_text).strip())
+            elif "table" in el:
+                table = el["table"]
+                rows = table.get("tableRows", [])
+                for row in rows:
+                    cells = row.get("tableCells", [])
+                    row_texts = []
+                    for cell in cells:
+                        cell_content = []
+                        for c in cell.get("content", []):
+                            # recursively read paragraphs inside cell
+                            if "paragraph" in c:
+                                parts = c["paragraph"].get("elements", [])
+                                for p in parts:
+                                    tr = p.get("textRun")
+                                    if tr and "content" in tr:
+                                        cell_content.append(tr["content"])
+                        row_texts.append(" ".join([t.strip() for t in cell_content]).strip())
+                    if row_texts:
+                        content.append(" | ".join(row_texts))
+            elif "sectionBreak" in el:
+                # treat as paragraph separator
+                content.append("\n")
+            # other element types ignored
+    read_structural_elements(body.get("content", []))
+    # join with double newlines for splitting later
+    return "\n\n".join([c for c in content if c])
+
+# ========== Embeddings & Vectorstore ==========
+# initialize embedding model (larger model for better accuracy)
+embeddings = OpenAIEmbeddings(model=EMBEDDING_MODEL, api_key=OPENAI_API_KEY)
+
+def build_or_load_vectorstore_from_google_doc():
+    """
+    Loads Google Doc, splits text, embeds chunks, and persist to Chroma.
+    If CHROMA_DIR already exists, reuse it to save time.
+    """
+    if os.path.exists(CHROMA_DIR):
+        try:
+            vs = Chroma(persist_directory=CHROMA_DIR, embedding_function=embeddings)
+            print("Loaded existing Chroma DB.")
+            return vs
+        except Exception:
+            # if loading fails, clear and rebuild
+            shutil.rmtree(CHROMA_DIR)
+
+    # load credentials and doc text
+    creds = load_service_account_credentials(GOOGLE_SERVICE_ACCOUNT_JSON)
+    print("Fetching Google Doc...")
+    text = fetch_google_doc_text(GOOGLE_DOC_ID, creds)
+    if not text or not text.strip():
+        raise RuntimeError("Google Doc contains no text")
+
+    # split to chunks
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=250, separators=["\n\n", "\n", ".", "!", "?"])
+    # create a simple list of docs expected by Chroma
+    texts = splitter.split_text(text)
+    # create docs in LangChain style (list of dicts with page_content)
+    docs = [{"page_content": t} for t in texts]
+
+    print(f"Indexing {len(docs)} chunks into Chroma...")
+    vs = Chroma.from_documents(documents=docs, embedding=embeddings, persist_directory=CHROMA_DIR)
+    # persist is automatic for recent chroma; keep call if supported
+    try:
+        vs.persist()
+    except Exception:
+        pass
+    print("Chroma build complete.")
+    return vs
+
+# build vectorstore at startup (blocking)
+vectorstore = build_or_load_vectorstore_from_google_doc()
+
+# initialize LLM
+llm = ChatOpenAI(model=LLM_MODEL, temperature=0, api_key=OPENAI_API_KEY)
+
+# ========== Utilities ==========
+def extract_intent_from_text(text: str) -> dict:
+    try:
+        prompt = intent_prompt.format(question=text)
+        resp = llm.invoke(prompt)
+        content = resp.content.strip()
+        m = re.search(r"\{.*\}", content, re.DOTALL)
+        if m:
+            return json.loads(m.group())
         return {}
     except Exception as e:
-        print("❌ Error extracting intent:", e)
+        print("Intent extraction failed:", e)
         return {}
 
-def format_requirements(intent: dict, question: str) -> str:
-    parts = [f"**Original Request:** {question}\n"]
-    if intent.get("platform_type"):
-        parts.append(f"**Platform Type:** {intent['platform_type']}")
-    if intent.get("platforms"):
-        parts.append(f"**Platforms:** {', '.join(intent['platforms'])}")
-    if intent.get("vendor_type"):
-        parts.append(f"**Vendor Type:** {intent['vendor_type']}")
-    if intent.get("project_types"):
-        parts.append(f"**Project Type:** {', '.join(intent['project_types'])}")
-    if intent.get("automations"):
-        parts.append(f"**Automations:** {intent['automations']}")
-    if intent.get("tech_stack"):
-        parts.append(f"**Technology Stack:** {intent['tech_stack']}")
-    if intent.get("services"):
-        parts.append(f"**Services:** {', '.join(intent['services'])}")
+def format_requirements(intent: dict, query: Query) -> str:
+    parts = []
+    if query.question:
+        parts.append(f"**Original Request:** {query.question}")
+    # prefer extracted intent keys
+    for key in ["platform_type", "platforms", "vendor_type", "project_types", "automations", "tech_stack", "services", "industry", "ecommerce_type", "budget_range"]:
+        val = intent.get(key)
+        if val:
+            if isinstance(val, list):
+                parts.append(f"**{key.replace('_',' ').title()}:** {', '.join(val)}")
+            else:
+                parts.append(f"**{key.replace('_',' ').title()}:** {val}")
+    # also include structured fields from the UI if they exist
+    for k, v in query.dict().items():
+        if k == "question" or not v:
+            continue
+        if isinstance(v, list):
+            parts.append(f"**{k.replace('_',' ').title()}:** {', '.join(v)}")
+        else:
+            parts.append(f"**{k.replace('_',' ').title()}:** {v}")
     return "\n".join(parts)
 
-# ========== ROUTES ==========
+def clean_generation(text: str) -> str:
+    # remove placeholder bracketed phrases
+    text = re.sub(r"\[Information[^\]]*\]", "", text)
+    # remove any trailing Conclusion / Summary or marketing closing phrases
+    text = re.sub(r"(?is)\n*\s*(#+\s*(Conclusion|Summary).*$|This proposal provides.*$|We look forward.*$|\bConclusion:.*$|\bSummary:.*$)", "", text)
+    # trim repeated newlines
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
 
+# ========== Routes ==========
 @app.get("/")
 def root():
-    return {"status": "online", "message": "Proposal Generator API is running."}
+    return {"status": "online", "message": "Proposal Generator (Google Doc KB) is running", "endpoints": {"ask": "POST /ask"}}
 
-
-@app.post("/ask")
+@app.post("/ask", response_model=AskResponse)
 def ask(query: Query):
+    # build combined description from structured fields + question
+    parts = []
+    if query.question:
+        parts.append(query.question.strip())
+    for k, v in query.dict().items():
+        if k == "question" or not v:
+            continue
+        if isinstance(v, list):
+            parts.append(f"{k}: {', '.join(v)}")
+        else:
+            parts.append(f"{k}: {v}")
+    combined_text = "\n\n".join(parts).strip()
+    if not combined_text:
+        raise HTTPException(status_code=400, detail="Provide question or selections in the request body")
+
     try:
-        print(f"🟢 Received query: {query.question}")
+        # extract intent
+        intent = extract_intent_from_text(combined_text)
 
-        intent = extract_intent(query.question)
-        print("🧩 Extracted Intent:", intent)
+        # build requirements text for prompt
+        requirements = format_requirements(intent, query)
 
-        requirements = format_requirements(intent, query.question)
-
-        # Retrieve from Chroma
+        # retrieve relevant documents
         retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
-        related_docs = retriever.invoke(query.question)
+        # use invoke on retriever (newer LangChain API)
+        related_docs = retriever.invoke(combined_text)
 
         if not related_docs:
-            raise HTTPException(status_code=404, detail="No related context found in PDF.")
+            # if no docs matched, return polite empty response (no hallucination)
+            return {"answer": "No relevant information found in the knowledge base for the given request.", "extracted_intent": intent}
 
-        context = "\n\n".join([doc.page_content for doc in related_docs])
+        context = "\n\n".join([d.page_content if hasattr(d, "page_content") else (d.get("page_content") if isinstance(d, dict) else str(d)) for d in related_docs])
 
-        filled_prompt = proposal_prompt.format(context=context, requirements=requirements)
-        response = llm.invoke(filled_prompt)
+        # prepare final prompt
+        full_prompt = proposal_prompt.format(context=context, requirements=requirements)
+        resp = llm.invoke(full_prompt)
+        generated = resp.content or ""
 
-        # Remove unwanted trailing lines or extra "[Information...]" remnants
-        cleaned = response.content
-        cleaned = re.sub(r'\[Information[^\]]*\]', '', cleaned)
-        cleaned = re.sub(r'(?i)(##?\s*Conclusion.*|##?\s*Summary.*|This proposal provides.*|We look forward.*)$','',cleaned,flags=re.DOTALL)
-        cleaned = re.sub(r'\n{2,}', '\n\n', cleaned).strip()
+        # clean unwanted endings and placeholders
+        cleaned = clean_generation(generated)
 
-
-        print("✅ Proposal generated successfully.")
         return {"answer": cleaned, "extracted_intent": intent}
-
     except Exception as e:
-        print("❌ Error in /ask:", str(e))
-        raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+        print("Error in /ask:", e)
+        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
