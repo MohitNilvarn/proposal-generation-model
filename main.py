@@ -14,7 +14,8 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.schema import Document  # ✅ Correct import
+from langchain_core.documents import Document
+
 
 # Google Docs + PDF support
 from google.oauth2 import service_account
