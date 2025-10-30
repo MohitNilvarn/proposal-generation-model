@@ -5,6 +5,7 @@ import json
 import shutil
 from dotenv import load_dotenv
 from typing import Optional, List
+from langchain.schema import Document
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -207,7 +208,15 @@ def build_or_load_vectorstore_from_google_doc():
     # create a simple list of docs expected by Chroma
     texts = splitter.split_text(text)
     # create docs in LangChain style (list of dicts with page_content)
-    docs = [{"page_content": t} for t in texts]
+    
+
+# create proper LangChain Document objects
+    docs = [Document(page_content=t) for t in texts]
+
+    print(f"Indexing {len(docs)} chunks into Chroma...")
+    vs = Chroma.from_documents(documents=docs, embedding=embeddings, persist_directory=CHROMA_DIR)
+
+
 
     print(f"Indexing {len(docs)} chunks into Chroma...")
     vs = Chroma.from_documents(documents=docs, embedding=embeddings, persist_directory=CHROMA_DIR)
