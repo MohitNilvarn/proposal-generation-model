@@ -1,195 +1,189 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import PromptTemplate
+from fastapi.middleware.cors import CORSMiddleware
+import os, re, json
 from dotenv import load_dotenv
-import os
-import re
-import json
 
-# Load environment variables
+# ========== LOAD ENV ==========
 load_dotenv()
-
-# ==========================
-# CONFIGURATION
-# ==========================
 openai_api_key = os.getenv("OPENAI_API_KEY")
 if not openai_api_key:
-    raise ValueError("Missing OPENAI_API_KEY in environment variables.")
+    raise ValueError("Missing OPENAI_API_KEY in .env")
 
+# ========== PDF CONFIG ==========
 PDF_PATH = "Proposal/Proposal Knowledge Base (1).pdf"
-CHROMA_DIR = "chroma_store"
 
-# ==========================
-# FASTAPI INITIALIZATION
-# ==========================
-app = FastAPI(title="Smart Proposal Generator API")
+# ========== FASTAPI APP ==========
+app = FastAPI(title="Proposal Generator API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*", "http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["*"],  # allow frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ==========================
-# LOAD KNOWLEDGE BASE
-# ==========================
+# ========== MODELS ==========
+class Query(BaseModel):
+    question: str
+
+
+# ========== PROMPTS ==========
+
+intent_extraction_prompt = """You are an expert at extracting structured information from proposal requests.
+
+Analyze the user's request and extract the following details as JSON:
+1. Platforms (Website, App, Admin Panel, etc.)
+2. Vendor Type (Single Vendor, Multi Vendor)
+3. Project Types (Software Development, AI Automations)
+4. Automations (Manychats, CRM, AI Calling)
+5. Platform Type (Property Listing, Ecommerce, etc.)
+6. Technology (Shopify, Next Js, Wordpress)
+7. Services (UI UX, Website Development, App Development, etc.)
+
+Return only JSON, nothing else.
+
+Example:
+{
+  "platforms": ["Website", "Admin Panel"],
+  "vendor_type": "Single Vendor",
+  "project_types": ["Software Development"],
+  "automations": null,
+  "platform_type": "Property Listing",
+  "tech_stack": "Next Js",
+  "services": ["UI UX Designs", "Website Development"]
+}
+"""
+
+proposal_prompt_template = """You are a proposal generator. Use ONLY the context provided below to generate a professional proposal.
+
+Rules:
+1. Use only information from context — do not invent new details.
+2. Remove any "[Information not available in knowledge base]" phrases.
+3. Do not add any closing marketing or summary sentences.
+4. Keep it formal, structured, and clear.
+
+---
+
+**CONTEXT:**
+{context}
+
+**PROJECT REQUIREMENTS:**
+{requirements}
+
+---
+
+Generate the full project proposal below:
+"""
+
+intent_prompt = PromptTemplate(
+    template=intent_extraction_prompt,
+    input_variables=["question"]
+)
+
+proposal_prompt = PromptTemplate(
+    template=proposal_prompt_template,
+    input_variables=["context", "requirements"]
+)
+
+# ========== LOAD KNOWLEDGE BASE ==========
+
 print("📄 Loading knowledge base from", PDF_PATH)
 loader = PyPDFLoader(PDF_PATH)
 docs = loader.load()
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=250)
-splits = text_splitter.split_documents(docs)
+
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+chunks = splitter.split_documents(docs)
+print(f"✅ Loaded {len(chunks)} chunks.")
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
-vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings, persist_directory=CHROMA_DIR)
+vectorstore = Chroma.from_documents(chunks, embeddings, persist_directory="./chroma_store")
 vectorstore.persist()
-print(f"✅ Loaded {len(splits)} chunks into Chroma.")
+print("✅ Chroma vectorstore initialized.")
 
-# ==========================
-# PROMPTS
-# ==========================
-intent_extraction_prompt = """You are an expert at analyzing project requirements.
-Extract structured information from the text below.
-
-USER INPUT:
-{question}
-
-Return JSON with the following keys:
-platforms, vendor_type, project_types, automations, platform_type, tech_stack, services, industry, ecommerce_type, budget_range.
-If not found, return null for that field.
-"""
-
-proposal_prompt_template = """You are a professional proposal generator.
-Use only information from the context to write a project proposal.
-
-RULES:
-1. Copy all prices, terms, and feature descriptions exactly as in context.
-2. If missing info, write "[Information not available in knowledge base]".
-3. Be concise and professional.
-
-CONTEXT:
-{context}
-
-PROJECT REQUIREMENTS:
-{requirements}
-
-Now generate a full structured proposal:
-- Project Overview
-- Features (Admin, App, Website)
-- Tech Stack
-- Services Included
-- Pricing Breakdown
-- Maintenance/Support
-- Timeline & Deliverables
-"""
-
-intent_prompt = PromptTemplate(template=intent_extraction_prompt, input_variables=["question"])
-proposal_prompt = PromptTemplate(template=proposal_prompt_template, input_variables=["context", "requirements"])
-
-# ==========================
-# LLM INITIALIZATION
-# ==========================
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_api_key)
 
-# ==========================
-# MODELS
-# ==========================
-class Query(BaseModel):
-    question: str | None = None
-    industry: str | None = None
-    ecommerce_type: str | None = None
-    platforms: list[str] | None = None
-    tech_focus: str | None = None
-    service_type: str | None = None
-    budget_range: str | None = None
 
-class AskResponse(BaseModel):
-    answer: str
-    extracted_intent: dict | None = None
+# ========== HELPER FUNCTIONS ==========
 
-# ==========================
-# UTILITIES
-# ==========================
 def extract_intent(question: str) -> dict:
     try:
-        response = llm.invoke(intent_prompt.format(question=question))
-        match = re.search(r"\{.*\}", response.content, re.DOTALL)
-        return json.loads(match.group()) if match else {}
+        filled_prompt = intent_prompt.format(question=question)
+        response = llm.invoke(filled_prompt)
+        content = response.content.strip()
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        return {}
     except Exception as e:
-        print(f"❌ Intent extraction failed: {e}")
+        print("❌ Error extracting intent:", e)
         return {}
 
-def format_requirements(intent: dict, query: Query) -> str:
-    req = []
-    if query.question:
-        req.append(f"**User Request:** {query.question}")
-    for key, val in intent.items():
-        if val:
-            req.append(f"**{key.replace('_', ' ').title()}:** {val}")
-    # also include structured JSON fields (from frontend dropdowns)
-    for field, val in query.dict().items():
-        if field != "question" and val:
-            req.append(f"**{field.replace('_', ' ').title()}:** {val}")
-    return "\n".join(req)
+def format_requirements(intent: dict, question: str) -> str:
+    parts = [f"**Original Request:** {question}\n"]
+    if intent.get("platform_type"):
+        parts.append(f"**Platform Type:** {intent['platform_type']}")
+    if intent.get("platforms"):
+        parts.append(f"**Platforms:** {', '.join(intent['platforms'])}")
+    if intent.get("vendor_type"):
+        parts.append(f"**Vendor Type:** {intent['vendor_type']}")
+    if intent.get("project_types"):
+        parts.append(f"**Project Type:** {', '.join(intent['project_types'])}")
+    if intent.get("automations"):
+        parts.append(f"**Automations:** {intent['automations']}")
+    if intent.get("tech_stack"):
+        parts.append(f"**Technology Stack:** {intent['tech_stack']}")
+    if intent.get("services"):
+        parts.append(f"**Services:** {', '.join(intent['services'])}")
+    return "\n".join(parts)
 
-# ==========================
-# ROUTES
-# ==========================
+# ========== ROUTES ==========
+
 @app.get("/")
-async def root():
-    return {
-        "status": "online",
-        "message": "Smart Proposal Generator is running",
-        "endpoint": "POST /ask",
-    }
+def root():
+    return {"status": "online", "message": "Proposal Generator API is running."}
 
-@app.post("/ask", response_model=AskResponse)
-async def ask(query: Query):
+
+@app.post("/ask")
+def ask(query: Query):
     try:
-        if not query.question and not any(query.dict().values()):
-            raise HTTPException(status_code=400, detail="Please provide a question or selections.")
+        print(f"🟢 Received query: {query.question}")
 
-        # combine all user data into a single text for intent extraction
-        combined_text = query.question or ""
-        structured_text = " ".join(
-            [f"{k}: {v}" for k, v in query.dict().items() if v and k != "question"]
-        )
-        full_query_text = f"{combined_text}\n\n{structured_text}"
+        intent = extract_intent(query.question)
+        print("🧩 Extracted Intent:", intent)
 
-        # Extract intent
-        intent = extract_intent(full_query_text)
+        requirements = format_requirements(intent, query.question)
 
-        # Build requirements text
-        requirements = format_requirements(intent, query)
-
-        # Retrieve matching context from Chroma
+        # Retrieve from Chroma
         retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
-        related_docs = retriever.invoke(full_query_text)
+        related_docs = retriever.invoke(query.question)
+
         if not related_docs:
-            return {"answer": "[Information not available in knowledge base]", "extracted_intent": intent}
+            raise HTTPException(status_code=404, detail="No related context found in PDF.")
 
         context = "\n\n".join([doc.page_content for doc in related_docs])
 
-        # Generate proposal
-        prompt_text = proposal_prompt.format(context=context, requirements=requirements)
-        response = llm.invoke(prompt_text)
+        filled_prompt = proposal_prompt.format(context=context, requirements=requirements)
+        response = llm.invoke(filled_prompt)
 
-        return {"answer": response.content, "extracted_intent": intent}
+        # Remove unwanted trailing lines or extra "[Information...]" remnants
+        cleaned = re.sub(r'\[Information[^\]]*\]', '', response.content)
+        cleaned = re.sub(r'\n{2,}', '\n\n', cleaned).strip()
+
+        print("✅ Proposal generated successfully.")
+        return {"answer": cleaned, "extracted_intent": intent}
 
     except Exception as e:
-        print("❌ Error:", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        print("❌ Error in /ask:", str(e))
+        raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
 
-# ==========================
-# ENTRY POINT
-# ==========================
+
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting Proposal Generator Server...")
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
