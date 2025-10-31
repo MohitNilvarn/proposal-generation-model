@@ -361,7 +361,7 @@ def ask(query: Query):
         retriever = vectorstore.as_retriever(
             search_kwargs={
                 "k": 12,  # Increased from 8
-                "fetch_k": 20  # Fetch more candidates for MMR
+                 
             }
         )
         related_docs = retriever.invoke(combined_text)
