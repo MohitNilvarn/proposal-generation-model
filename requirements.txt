@@ -20,3 +20,7 @@ langchain-community
 supabase
 openai
 tiktoken
+unstructured
+python-docx
+pdfminer.six
+
