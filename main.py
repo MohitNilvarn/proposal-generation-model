@@ -133,13 +133,26 @@ llm = ChatOpenAI(
     max_tokens=4000
 )
 
-# Create RAG chain using LCEL (LangChain Expression Language)
+# ✅ Create RAG chain using LCEL (LangChain Expression Language)
+# Function to format retrieved documents into a single text
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
+# Function to combine all input fields into one search query
+def build_query(inputs: dict) -> str:
+    query_parts = [
+        f"Project Type: {inputs.get('project_type', '')}",
+        f"Platforms: {inputs.get('platforms', '')}",
+        f"Technology: {inputs.get('tech_type', '')}",
+        f"Services: {inputs.get('services', '')}",
+        f"Custom Prompt: {inputs.get('custom_prompt', '')}"
+    ]
+    return "\n".join(query_parts)
+
+# Build the RAG chain properly (fixing the PyString error)
 rag_chain = (
     {
-        "context": retriever | format_docs,
+        "context": RunnablePassthrough() | (lambda x: build_query(x)) | retriever | format_docs,
         "platforms": RunnablePassthrough(),
         "vendor_type": RunnablePassthrough(),
         "project_type": RunnablePassthrough(),
