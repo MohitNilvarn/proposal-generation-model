@@ -1,4 +1,3 @@
-# main.py
 import os
 import re
 import json
@@ -11,14 +10,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# ✅ Correct imports for new LangChain
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document  # ✅ FIXED import
+from langchain_core.documents import Document
 
-# Google API imports
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -35,10 +32,8 @@ LLM_MODEL = "gpt-4o-mini"
 
 if not OPENAI_API_KEY:
     raise ValueError("❌ Missing OPENAI_API_KEY in environment")
-
 if not GOOGLE_DOC_ID:
     raise ValueError("❌ Missing GOOGLE_DOC_ID in environment")
-
 if not GOOGLE_SERVICE_ACCOUNT_JSON:
     raise ValueError("❌ Missing GOOGLE_SERVICE_ACCOUNT_JSON in environment")
 
@@ -81,35 +76,92 @@ class Query(BaseModel):
 class AskResponse(BaseModel):
     answer: str
     extracted_intent: dict | None = None
+    confidence_score: Optional[str] = None
 
-# ========== Prompts ==========
+# ========== Enhanced Prompts ==========
 intent_extraction_prompt = """You are an expert at extracting structured information from user requests.
 
 USER INPUT:
 {question}
 
-Return JSON with keys:
-platforms, vendor_type, project_types, automations, platform_type, tech_stack, services, industry, ecommerce_type, budget_range.
-Use null for missing values.
-"""
+Extract and return ONLY a valid JSON object with these keys (use null for missing values):
+- platforms: list of technology platforms mentioned
+- vendor_type: type of vendor/business model
+- project_types: types of projects or features needed
+- automations: automation requirements
+- platform_type: web, mobile, or both
+- tech_stack: specific technologies requested
+- services: types of services needed
+- industry: business industry/domain
+- ecommerce_type: type of ecommerce (if applicable)
+- budget_range: budget mentioned (if any)
 
-proposal_prompt_template = """You are a proposal generation assistant. Use ONLY the provided context to produce a professional project proposal.
+Return ONLY the JSON, no other text."""
 
-Rules:
-1. Do NOT invent facts.
-2. Do NOT include placeholder phrases like "[Information not available in knowledge base]".
-3. Do NOT add extra marketing or closing statements.
-4. Omit missing details — do not guess or fabricate.
-5. Keep it clean, professional, and structured.
+proposal_prompt_template = """You are a professional proposal writer for AppSynergies Pvt Ltd, a software development company.
 
-CONTEXT:
+CRITICAL INSTRUCTIONS:
+1. Generate a PROFESSIONAL, STRUCTURED PROPOSAL in PROSE format - NOT bullet points
+2. Follow the structure of professional consulting proposals with clear sections
+3. Use ONLY information from the provided context - DO NOT invent or hallucinate details
+4. If pricing information is not in the context, DO NOT make up numbers - state "Pricing to be determined based on detailed requirements"
+5. Write in complete paragraphs and sentences, NOT lists or bullet points
+6. Include proper section headers using markdown (##)
+7. Be specific and reference actual details from the context when available
+8. Maintain a professional, confident tone throughout
+
+CONTEXT FROM KNOWLEDGE BASE:
 {context}
 
-REQUIREMENTS:
+CLIENT REQUIREMENTS:
 {requirements}
 
-Now generate the final proposal:
-"""
+PROPOSAL STRUCTURE TO FOLLOW:
+## Executive Summary
+Brief overview of the project and proposed solution (2-3 paragraphs)
+
+## Project Understanding
+Detailed understanding of client requirements and objectives (2-4 paragraphs)
+
+## Proposed Solution
+Comprehensive description of the solution approach, including:
+- Technical architecture and approach
+- Key features and functionalities
+- Technology stack recommendations
+- Integration requirements
+
+## Project Deliverables
+Clear description of what will be delivered (in prose, not bullet points)
+
+## Development Approach
+Explanation of methodology, team structure, and workflow
+
+## Timeline and Phases
+Project timeline with phase descriptions (can use a brief phase breakdown table if needed)
+
+## Team Composition
+Description of the team and their roles
+
+## Investment and Pricing
+If pricing information is available in context, present it clearly. If not, state that detailed pricing will be provided after requirements analysis.
+
+## Support and Maintenance
+Post-deployment support details
+
+## Why AppSynergies
+Company strengths and differentiators
+
+## Next Steps
+Clear actions for moving forward
+
+IMPORTANT REMINDERS:
+- Write in PROSE with complete sentences and paragraphs
+- NO bullet point lists in the main content
+- If information is missing from context, acknowledge it professionally
+- Use only factual information from the provided context
+- Maintain professional consulting proposal style throughout
+
+Generate the proposal now:"""
 
 intent_prompt = PromptTemplate(template=intent_extraction_prompt, input_variables=["question"])
 proposal_prompt = PromptTemplate(template=proposal_prompt_template, input_variables=["context", "requirements"])
@@ -161,7 +213,12 @@ def build_or_load_vectorstore_from_google_doc():
     if not text.strip():
         raise RuntimeError("Google Doc is empty")
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=250)
+    # Improved chunking for better context preservation
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=2000,  # Increased chunk size
+        chunk_overlap=400,  # Increased overlap
+        separators=["\n\n", "\n", ". ", " ", ""]
+    )
     chunks = splitter.split_text(text)
     docs = [Document(page_content=chunk) for chunk in chunks]
 
@@ -174,7 +231,7 @@ def build_or_load_vectorstore_from_google_doc():
     return vs
 
 vectorstore = build_or_load_vectorstore_from_google_doc()
-llm = ChatOpenAI(model=LLM_MODEL, temperature=0, api_key=OPENAI_API_KEY)
+llm = ChatOpenAI(model=LLM_MODEL, temperature=0.3, api_key=OPENAI_API_KEY)  # Slightly increased temp for better prose
 
 # ========== Utils ==========
 def extract_intent_from_text(text: str) -> dict:
@@ -183,54 +240,170 @@ def extract_intent_from_text(text: str) -> dict:
         content = resp.content.strip()
         m = re.search(r"\{.*\}", content, re.DOTALL)
         return json.loads(m.group()) if m else {}
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ Intent extraction error: {e}")
         return {}
 
 def format_requirements(intent: dict, query: Query) -> str:
+    """Format requirements in a more narrative style"""
     parts = []
+    
     if query.question:
-        parts.append(f"**Original Request:** {query.question}")
+        parts.append(f"**Client Request:** {query.question}\n")
+    
+    # Group related intent data
+    technical_aspects = []
+    business_aspects = []
+    
     for key, val in intent.items():
-        if val:
-            if isinstance(val, list):
-                parts.append(f"**{key.replace('_',' ').title()}:** {', '.join(val)}")
-            else:
-                parts.append(f"**{key.replace('_',' ').title()}:** {val}")
+        if not val:
+            continue
+            
+        formatted_key = key.replace('_', ' ').title()
+        formatted_val = ', '.join(val) if isinstance(val, list) else val
+        
+        if key in ['platforms', 'tech_stack', 'platform_type', 'automations']:
+            technical_aspects.append(f"{formatted_key}: {formatted_val}")
+        else:
+            business_aspects.append(f"{formatted_key}: {formatted_val}")
+    
+    if business_aspects:
+        parts.append("**Business Requirements:**\n" + "\n".join(f"- {aspect}" for aspect in business_aspects))
+    
+    if technical_aspects:
+        parts.append("\n**Technical Requirements:**\n" + "\n".join(f"- {aspect}" for aspect in technical_aspects))
+    
+    # Add structured query fields
+    additional = []
     for k, v in query.dict().items():
         if k == "question" or not v:
             continue
-        parts.append(f"**{k.replace('_',' ').title()}:** {', '.join(v) if isinstance(v, list) else v}")
+        formatted_val = ', '.join(v) if isinstance(v, list) else v
+        additional.append(f"{k.replace('_', ' ').title()}: {formatted_val}")
+    
+    if additional:
+        parts.append("\n**Additional Details:**\n" + "\n".join(f"- {item}" for item in additional))
+    
     return "\n".join(parts)
 
-def clean_generation(text: str) -> str:
-    text = re.sub(r"\[Information[^\]]*\]", "", text)
-    text = re.sub(r"(?is)\n*\s*(#+\s*(Conclusion|Summary).*$|We look forward.*$|This proposal provides.*$)", "", text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text
+def validate_and_clean_proposal(text: str, context: str) -> tuple[str, str]:
+    """
+    Validate proposal and assign confidence score
+    Returns: (cleaned_text, confidence_level)
+    """
+    # Check for hallucination indicators
+    hallucination_indicators = [
+        r'\$[\d,]+',  # Dollar amounts not in context
+        r'Rs\.?\s*[\d,]+',  # Rupee amounts not in context
+        r'\d+\s*(?:months?|weeks?|days?)',  # Timeframes not in context
+    ]
+    
+    confidence = "HIGH"
+    
+    # Extract numbers from proposal
+    proposal_numbers = set(re.findall(r'\d+(?:,\d+)*', text))
+    context_numbers = set(re.findall(r'\d+(?:,\d+)*', context))
+    
+    # Check if proposal mentions numbers not in context
+    fabricated_numbers = proposal_numbers - context_numbers
+    if len(fabricated_numbers) > 3:  # Allow some tolerance
+        confidence = "MEDIUM"
+    
+    # Check for placeholder phrases
+    placeholders = [
+        "to be determined",
+        "will be provided",
+        "contact for pricing",
+        "based on requirements"
+    ]
+    
+    if any(phrase in text.lower() for phrase in placeholders):
+        confidence = "MEDIUM"
+    
+    # Remove any remaining placeholder brackets
+    text = re.sub(r'\[Information[^\]]*\]', '', text)
+    text = re.sub(r'\[TBD\]', 'To be determined', text, flags=re.IGNORECASE)
+    
+    # Clean up excessive whitespace
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    
+    return text, confidence
 
 # ========== Routes ==========
 @app.get("/")
 def root():
-    return {"status": "online", "message": "✅ Proposal Generator ready", "endpoints": ["/ask"]}
+    return {
+        "status": "online",
+        "message": "✅ Proposal Generator ready",
+        "endpoints": ["/ask"],
+        "version": "2.0-improved"
+    }
 
 @app.post("/ask", response_model=AskResponse)
 def ask(query: Query):
-    combined_text = "\n".join([query.question or ""] + [f"{k}: {v}" for k, v in query.dict().items() if v and k != "question"])
+    combined_text = "\n".join([
+        query.question or "",
+        *[f"{k}: {v}" for k, v in query.dict().items() if v and k != "question"]
+    ])
+    
     if not combined_text.strip():
-        raise HTTPException(status_code=400, detail="Provide a question or structured input")
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a question or structured input"
+        )
 
     try:
+        # Extract intent
         intent = extract_intent_from_text(combined_text)
         requirements = format_requirements(intent, query)
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
+        
+        # Retrieve more context with better search
+        retriever = vectorstore.as_retriever(
+            search_kwargs={
+                "k": 12,  # Increased from 8
+                "fetch_k": 20  # Fetch more candidates for MMR
+            }
+        )
         related_docs = retriever.invoke(combined_text)
 
         if not related_docs:
-            return {"answer": "No relevant information found in the knowledge base.", "extracted_intent": intent}
+            return {
+                "answer": "Unfortunately, I don't have sufficient information in the knowledge base to generate a proposal for this request. Please provide more details or contact AppSynergies directly at info@AppSynergies.com",
+                "extracted_intent": intent,
+                "confidence_score": "LOW"
+            }
 
-        context = "\n\n".join(d.page_content for d in related_docs)
+        # Build context with document sources
+        context = "\n\n---\n\n".join(d.page_content for d in related_docs)
+        
+        # Generate proposal
         prompt = proposal_prompt.format(context=context, requirements=requirements)
         resp = llm.invoke(prompt)
-        return {"answer": clean_generation(resp.content or ""), "extracted_intent": intent}
+        
+        # Validate and clean
+        cleaned_answer, confidence = validate_and_clean_proposal(
+            resp.content or "",
+            context
+        )
+        
+        return {
+            "answer": cleaned_answer,
+            "extracted_intent": intent,
+            "confidence_score": confidence
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
+        print(f"❌ Error in /ask endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+@app.post("/refresh-kb")
+def refresh_knowledge_base():
+    """Endpoint to manually refresh the knowledge base"""
+    try:
+        global vectorstore
+        if os.path.exists(CHROMA_DIR):
+            shutil.rmtree(CHROMA_DIR)
+        vectorstore = build_or_load_vectorstore_from_google_doc()
+        return {"status": "success", "message": "Knowledge base refreshed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to refresh KB: {str(e)}")
