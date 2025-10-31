@@ -123,6 +123,88 @@ vectorstore.persist()
 
 print(f"✅ Created Chroma vectorstore with {len(chunks)} chunks.")
 
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredWordDocumentLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_core.prompts import PromptTemplate
+from dotenv import load_dotenv
+import os
+import re
+import json
+import glob
+
+# ---------------- CONFIG ----------------
+load_dotenv()
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not openai_api_key:
+    raise ValueError("❌ Missing OPENAI_API_KEY")
+
+KB_DIR = "Proposal"  # Folder containing all your .pdf, .docx, .txt, etc.
+
+# ---------------- PROMPTS ----------------
+intent_extraction_prompt = """You are an expert at extracting structured information from proposal requests.
+
+Analyze the user's request and extract the following information:
+
+**USER REQUEST:**
+{question}
+
+**TASK:**
+Extract and identify key structured fields like:
+- Platform(s)
+- Vendor Type
+- Project Type
+- Automation Tools
+- Platform Category
+- Technology Stack
+- Services Required
+
+Return ONLY a JSON object like:
+{{
+  "platforms": ["Website", "Admin Panel"],
+  "vendor_type": "Single Vendor",
+  "project_types": ["Software Development"],
+  "automations": ["CRM Automation"],
+  "platform_type": "Property Listing",
+  "tech_stack": ["Next Js"],
+  "services": ["Website Development", "Maintenance"]
+}}"""
+
+structured_prompt_template = """You are a professional proposal generator.
+
+**RULES:**
+- COPY all pricing and details EXACTLY from the context.
+- If info is missing, write: "[Information not available in knowledge base]"
+- Do NOT calculate totals or invent prices.
+
+**CONTEXT (Knowledge Base):**
+{context}
+
+**PROJECT REQUIREMENTS:**
+{requirements}
+
+Generate the proposal with sections:
+1. Project Overview
+2. Admin Panel Features
+3. Website/App Features
+4. Technology Stack
+5. Services Included
+6. Pricing Breakdown
+7. Maintenance & Support
+8. Timeline/Deliverables
+"""
+
+intent_prompt = PromptTemplate(template=intent_extraction_prompt, input_variables=["question"])
+proposal_prompt = PromptTemplate(template=structured_prompt_template, input_variables=["context", "requirements"])
+
+# ---------------- LLM ----------------
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_api_key)
+embeddings = OpenAIEmbeddings(model="text-embedding-3-large", api_key=openai_api_key)
+
 # ---------------- FASTAPI APP ----------------
 app = FastAPI(title="Docs KB Proposal Generator (Chroma Vectorstore)")
 
@@ -133,6 +215,57 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+vectorstore = None  # initialized later after startup
+
+# ---------------- LOAD DOCS KB ----------------
+def load_documents_from_kb(kb_dir=KB_DIR):
+    """Load all supported docs from KB folder"""
+    print("📂 Loading knowledge base documents...")
+    docs = []
+
+    supported_files = []
+    for ext in ["*.pdf", "*.txt", "*.md", "*.docx"]:
+        supported_files.extend(glob.glob(os.path.join(kb_dir, ext)))
+
+    if not supported_files:
+        raise ValueError(f"No files found in {kb_dir}. Please add PDFs, DOCX, or TXT files.")
+
+    for file in supported_files:
+        ext = os.path.splitext(file)[1].lower()
+        if ext == ".pdf":
+            loader = PyPDFLoader(file)
+        elif ext in [".txt", ".md"]:
+            loader = TextLoader(file)
+        elif ext == ".docx":
+            loader = UnstructuredWordDocumentLoader(file)
+        else:
+            continue
+        docs.extend(loader.load())
+
+    print(f"✅ Loaded {len(docs)} documents from {len(supported_files)} files.")
+    return docs
+
+
+@app.on_event("startup")
+def init_vectorstore():
+    """Load KB after FastAPI starts (to avoid blocking the port on Render)."""
+    global vectorstore
+    try:
+        print("🚀 Initializing knowledge base...")
+        docs = load_documents_from_kb()
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = splitter.split_documents(docs)
+        vectorstore = Chroma.from_documents(
+            documents=chunks,
+            embedding=embeddings,
+            persist_directory="chroma_store"
+        )
+        vectorstore.persist()
+        print(f"✅ Vectorstore ready with {len(chunks)} chunks.")
+    except Exception as e:
+        print(f"⚠️ Startup KB load failed: {e}")
+        vectorstore = None
 
 # ---------------- MODELS ----------------
 class Query(BaseModel):
@@ -186,6 +319,9 @@ def ask(query: Query):
         if not query.question.strip():
             raise HTTPException(status_code=400, detail="Question cannot be empty")
 
+        if vectorstore is None:
+            raise HTTPException(status_code=503, detail="Knowledge base not initialized yet")
+
         # Extract intent
         intent = extract_intent(query.question)
         requirements = format_requirements_from_intent(intent, query.question)
@@ -216,15 +352,12 @@ def reload_kb():
         new_docs = load_documents_from_kb()
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = splitter.split_documents(new_docs)
-
-        # --- Reload with Chroma ---
         vectorstore = Chroma.from_documents(
             documents=chunks,
             embedding=embeddings,
             persist_directory="chroma_store"
         )
         vectorstore.persist()
-
         return {"status": "success", "total_chunks": len(chunks), "message": "Knowledge base reloaded successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -232,5 +365,6 @@ def reload_kb():
 
 if __name__ == "__main__":
     import uvicorn, os
-    port = int(os.environ.get("PORT", 8000))  # Render assigns a dynamic port
+    port = int(os.environ.get("PORT", 10000))  # Render uses dynamic port
+    print(f"🌐 Starting server on port {port}")
     uvicorn.run("main:app", host="0.0.0.0", port=port)
