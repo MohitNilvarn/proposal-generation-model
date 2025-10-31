@@ -78,7 +78,7 @@ proposal_prompt = PromptTemplate(template=structured_prompt_template, input_vari
 
 # ---------------- LLM ----------------
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=openai_api_key)
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_api_key)
+embeddings = OpenAIEmbeddings(model="text-embedding-3-large", api_key=openai_api_key)
 
 # ---------------- LOAD DOCS KB ----------------
 def load_documents_from_kb(kb_dir=KB_DIR):
