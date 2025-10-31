@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredWordDocumentLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv
 import os
@@ -112,11 +112,19 @@ def load_documents_from_kb(kb_dir=KB_DIR):
 docs = load_documents_from_kb()
 splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 chunks = splitter.split_documents(docs)
-vectorstore = FAISS.from_documents(chunks, embeddings)
-print(f"✅ Created vectorstore with {len(chunks)} chunks.")
+
+# --- 🟢 FAISS replaced with Chroma ---
+vectorstore = Chroma.from_documents(
+    documents=chunks,
+    embedding=embeddings,
+    persist_directory="chroma_store"  # folder to store embeddings
+)
+vectorstore.persist()
+
+print(f"✅ Created Chroma vectorstore with {len(chunks)} chunks.")
 
 # ---------------- FASTAPI APP ----------------
-app = FastAPI(title="Docs KB Proposal Generator (Local Vectorstore)")
+app = FastAPI(title="Docs KB Proposal Generator (Chroma Vectorstore)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -208,7 +216,15 @@ def reload_kb():
         new_docs = load_documents_from_kb()
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = splitter.split_documents(new_docs)
-        vectorstore = FAISS.from_documents(chunks, embeddings)
+
+        # --- Reload with Chroma ---
+        vectorstore = Chroma.from_documents(
+            documents=chunks,
+            embedding=embeddings,
+            persist_directory="chroma_store"
+        )
+        vectorstore.persist()
+
         return {"status": "success", "total_chunks": len(chunks), "message": "Knowledge base reloaded successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
