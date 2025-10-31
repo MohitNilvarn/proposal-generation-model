@@ -18,7 +18,7 @@ openai_api_key = os.getenv("OPENAI_API_KEY")
 if not openai_api_key:
     raise ValueError("❌ Missing OPENAI_API_KEY")
 
-KB_DIR = "KnowledgeBase"  # Folder containing all your .pdf, .docx, .txt, etc.
+KB_DIR = "Proposal"  # Folder containing all your .pdf, .docx, .txt, etc.
 
 # ---------------- PROMPTS ----------------
 intent_extraction_prompt = """You are an expert at extracting structured information from proposal requests.
