@@ -205,6 +205,15 @@ async def generate_proposal(request: ProposalRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating proposal: {str(e)}")
+    
+
+@app.post("/ask")
+async def ask_redirect(request: ProposalRequest):
+    """Alias for /generate-proposal — allows frontend or n8n workflows using /ask."""
+    return await generate_proposal(request)
+
+
+
 
 @app.get("/health")
 async def health_check():
