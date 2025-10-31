@@ -98,17 +98,22 @@ Extract and return ONLY a valid JSON object with these keys (use null for missin
 
 Return ONLY the JSON, no other text."""
 
+# IMPROVED PROPOSAL PROMPT - More explicit instructions to prevent hallucination
 proposal_prompt_template = """You are a professional proposal writer for AppSynergies Pvt Ltd, a software development company.
 
-CRITICAL INSTRUCTIONS:
-1. Generate a PROFESSIONAL, STRUCTURED PROPOSAL in PROSE format - NOT bullet points
-2. Follow the structure of professional consulting proposals with clear sections
-3. Use ONLY information from the provided context - DO NOT invent or hallucinate details
-4. If pricing information is not in the context, DO NOT make up numbers - state "Pricing to be determined based on detailed requirements"
-5. Write in complete paragraphs and sentences, NOT lists or bullet points
-6. Include proper section headers using markdown (##)
-7. Be specific and reference actual details from the context when available
-8. Maintain a professional, confident tone throughout
+⚠️ CRITICAL ANTI-HALLUCINATION RULES:
+1. ONLY use information explicitly stated in the CONTEXT below
+2. If pricing/timeline information is NOT in the context, write: "Pricing will be provided after detailed requirement analysis"
+3. If technical details are NOT in the context, write: "Technical specifications will be finalized during the requirement gathering phase"
+4. DO NOT invent features, prices, timelines, or technical specifications
+5. When in doubt, acknowledge the gap rather than making up information
+
+📋 FORMATTING REQUIREMENTS:
+1. Write in PROFESSIONAL PROSE with complete sentences and paragraphs
+2. NO bullet points in main sections (only use for deliverables if absolutely necessary)
+3. Each section should have 2-4 well-developed paragraphs
+4. Make each point slightly elaborative - add ONE sentence of context/explanation per key point
+5. Use proper section headers with markdown (##)
 
 CONTEXT FROM KNOWLEDGE BASE:
 {context}
@@ -116,52 +121,51 @@ CONTEXT FROM KNOWLEDGE BASE:
 CLIENT REQUIREMENTS:
 {requirements}
 
-PROPOSAL STRUCTURE TO FOLLOW:
+PROPOSAL STRUCTURE:
+
 ## Executive Summary
-Brief overview of the project and proposed solution (2-3 paragraphs)
+Write 2-3 paragraphs providing an overview of the project opportunity. Begin by acknowledging the client's needs as expressed in their requirements. Then briefly describe AppSynergies' understanding of the project scope and the proposed approach. Conclude with a statement about the expected outcomes and value proposition. Make this engaging and client-focused.
 
 ## Project Understanding
-Detailed understanding of client requirements and objectives (2-4 paragraphs)
+Write 2-4 paragraphs demonstrating deep understanding of the client's requirements. Start by restating the core business problem or opportunity. Then explain how the proposed solution aligns with their objectives, elaborating on specific requirements they've mentioned. Discuss any industry-specific considerations or challenges that AppSynergies recognizes. This should show that you truly understand their needs.
 
 ## Proposed Solution
-Comprehensive description of the solution approach, including:
-- Technical architecture and approach
-- Key features and functionalities
-- Technology stack recommendations
-- Integration requirements
+Write 3-5 paragraphs describing the comprehensive solution. Begin with the overall technical approach and architecture philosophy. Then elaborate on the key features and functionalities, explaining how each addresses specific client needs (add one sentence of context for each major feature). Discuss the technology stack recommendations with brief justifications. Finally, cover integration requirements and how the solution will work within their existing ecosystem.
 
 ## Project Deliverables
-Clear description of what will be delivered (in prose, not bullet points)
+Write 2-3 paragraphs clearly describing what will be delivered. Instead of listing items, describe the deliverables in narrative form, grouping related items together. For each major deliverable, add one sentence explaining its purpose or value. Explain the completeness and quality standards that will be applied.
 
 ## Development Approach
-Explanation of methodology, team structure, and workflow
+Write 2-3 paragraphs explaining the methodology and workflow. Describe the development methodology (Agile, iterative, etc.) and why it's appropriate. Elaborate on team structure and how collaboration will work, including client involvement at key stages. Explain quality assurance processes and how feedback will be incorporated.
 
 ## Timeline and Phases
-Project timeline with phase descriptions (can use a brief phase breakdown table if needed)
+Write 2-3 paragraphs describing the project timeline. Explain the phased approach and why it's structured this way. For each major phase, provide a brief description of what will be accomplished and approximately how long it will take (ONLY if this information is in the context). If timeline details are not in the context, state: "A detailed timeline will be provided after requirement finalization."
 
 ## Team Composition
-Description of the team and their roles
+Write 2 paragraphs describing the team. Explain the roles that will be involved in the project and their responsibilities. Elaborate on the team's expertise and how their skills align with project needs. Add context about collaboration and communication approaches.
 
 ## Investment and Pricing
-If pricing information is available in context, present it clearly. If not, state that detailed pricing will be provided after requirements analysis.
+Write 2-3 paragraphs about pricing. If specific pricing is available in the context, present it clearly with explanations of what each component covers. If pricing is NOT in the context, write: "Detailed pricing will be provided after a thorough requirement analysis session. Our pricing is structured to be transparent and aligned with the value delivered. We will provide a comprehensive breakdown covering design, development, testing, deployment, and ongoing support."
 
 ## Support and Maintenance
-Post-deployment support details
+Write 2 paragraphs about post-deployment support. Describe the support model and what it covers, elaborating on response times and coverage. Explain maintenance services and how they ensure long-term success.
 
 ## Why AppSynergies
-Company strengths and differentiators
+Write 2-3 paragraphs highlighting company strengths. Explain what makes AppSynergies the right partner for this project, elaborating on relevant experience, expertise, and differentiators. Focus on aspects that are particularly relevant to the client's needs.
 
 ## Next Steps
-Clear actions for moving forward
+Write 1-2 paragraphs outlining clear next steps. Describe the immediate actions needed to move forward, such as requirement gathering sessions, kickoff meetings, and contract finalization. Make this actionable and time-bound where appropriate.
 
-IMPORTANT REMINDERS:
-- Write in PROSE with complete sentences and paragraphs
-- NO bullet point lists in the main content
-- If information is missing from context, acknowledge it professionally
-- Use only factual information from the provided context
-- Maintain professional consulting proposal style throughout
+---
 
-Generate the proposal now:"""
+IMPORTANT VALIDATION BEFORE WRITING:
+- Review the context carefully
+- Identify what information IS available
+- Identify what information is NOT available
+- For missing information, use the placeholder phrases provided above
+- Ensure every factual statement can be traced back to the context
+
+Now generate the proposal following all instructions above:"""
 
 intent_prompt = PromptTemplate(template=intent_extraction_prompt, input_variables=["question"])
 proposal_prompt = PromptTemplate(template=proposal_prompt_template, input_variables=["context", "requirements"])
@@ -213,10 +217,10 @@ def build_or_load_vectorstore_from_google_doc():
     if not text.strip():
         raise RuntimeError("Google Doc is empty")
 
-    # Improved chunking for better context preservation
+    # Improved chunking strategy for better context
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000,  # Increased chunk size
-        chunk_overlap=400,  # Increased overlap
+        chunk_size=2500,  # Larger chunks for better context
+        chunk_overlap=500,  # More overlap to preserve context
         separators=["\n\n", "\n", ". ", " ", ""]
     )
     chunks = splitter.split_text(text)
@@ -231,7 +235,7 @@ def build_or_load_vectorstore_from_google_doc():
     return vs
 
 vectorstore = build_or_load_vectorstore_from_google_doc()
-llm = ChatOpenAI(model=LLM_MODEL, temperature=0.3, api_key=OPENAI_API_KEY)  # Slightly increased temp for better prose
+llm = ChatOpenAI(model=LLM_MODEL, temperature=0.1, api_key=OPENAI_API_KEY)  # Lower temp for less hallucination
 
 # ========== Utils ==========
 def extract_intent_from_text(text: str) -> dict:
@@ -245,98 +249,101 @@ def extract_intent_from_text(text: str) -> dict:
         return {}
 
 def format_requirements(intent: dict, query: Query) -> str:
-    """Format requirements in a more narrative style"""
+    """Format requirements in a clear, structured way"""
     parts = []
     
     if query.question:
-        parts.append(f"**Client Request:** {query.question}\n")
+        parts.append(f"**Primary Request:** {query.question}\n")
     
-    # Group related intent data
-    technical_aspects = []
-    business_aspects = []
+    # Technical requirements
+    technical_items = []
+    for key in ['platforms', 'tech_stack', 'platform_type', 'automations', 'project_types']:
+        val = intent.get(key)
+        if val:
+            formatted_key = key.replace('_', ' ').title()
+            formatted_val = ', '.join(val) if isinstance(val, list) else val
+            technical_items.append(f"• {formatted_key}: {formatted_val}")
     
-    for key, val in intent.items():
-        if not val:
-            continue
-            
-        formatted_key = key.replace('_', ' ').title()
-        formatted_val = ', '.join(val) if isinstance(val, list) else val
-        
-        if key in ['platforms', 'tech_stack', 'platform_type', 'automations']:
-            technical_aspects.append(f"{formatted_key}: {formatted_val}")
-        else:
-            business_aspects.append(f"{formatted_key}: {formatted_val}")
+    if technical_items:
+        parts.append("**Technical Requirements:**\n" + "\n".join(technical_items))
     
-    if business_aspects:
-        parts.append("**Business Requirements:**\n" + "\n".join(f"- {aspect}" for aspect in business_aspects))
+    # Business requirements
+    business_items = []
+    for key in ['vendor_type', 'services', 'industry', 'ecommerce_type', 'budget_range']:
+        val = intent.get(key)
+        if val:
+            formatted_key = key.replace('_', ' ').title()
+            formatted_val = ', '.join(val) if isinstance(val, list) else val
+            business_items.append(f"• {formatted_key}: {formatted_val}")
     
-    if technical_aspects:
-        parts.append("\n**Technical Requirements:**\n" + "\n".join(f"- {aspect}" for aspect in technical_aspects))
-    
-    # Add structured query fields
-    additional = []
+    # Add from query object
     for k, v in query.dict().items():
-        if k == "question" or not v:
-            continue
-        formatted_val = ', '.join(v) if isinstance(v, list) else v
-        additional.append(f"{k.replace('_', ' ').title()}: {formatted_val}")
+        if k != "question" and v:
+            formatted_key = k.replace('_', ' ').title()
+            formatted_val = ', '.join(v) if isinstance(v, list) else v
+            business_items.append(f"• {formatted_key}: {formatted_val}")
     
-    if additional:
-        parts.append("\n**Additional Details:**\n" + "\n".join(f"- {item}" for item in additional))
+    if business_items:
+        parts.append("\n**Business Requirements:**\n" + "\n".join(business_items))
     
     return "\n".join(parts)
 
-def validate_and_clean_proposal(text: str, context: str) -> tuple[str, str]:
+def validate_proposal_against_context(proposal: str, context: str) -> tuple[str, str, list]:
     """
-    Validate proposal and assign confidence score
-    Returns: (cleaned_text, confidence_level)
+    Enhanced validation to detect hallucination
+    Returns: (cleaned_proposal, confidence_score, warning_list)
     """
-    # Check for hallucination indicators
-    hallucination_indicators = [
-        r'\$[\d,]+',  # Dollar amounts not in context
-        r'Rs\.?\s*[\d,]+',  # Rupee amounts not in context
-        r'\d+\s*(?:months?|weeks?|days?)',  # Timeframes not in context
-    ]
-    
+    warnings = []
     confidence = "HIGH"
     
-    # Extract numbers from proposal
-    proposal_numbers = set(re.findall(r'\d+(?:,\d+)*', text))
-    context_numbers = set(re.findall(r'\d+(?:,\d+)*', context))
+    # Extract all numbers from both texts
+    proposal_numbers = set(re.findall(r'\$\s*[\d,]+|\₹\s*[\d,]+|USD\s*[\d,]+|INR\s*[\d,]+|\d+\s*(?:USD|INR)', proposal))
+    context_numbers = set(re.findall(r'\$\s*[\d,]+|\₹\s*[\d,]+|USD\s*[\d,]+|INR\s*[\d,]+|\d+\s*(?:USD|INR)', context))
     
-    # Check if proposal mentions numbers not in context
+    # Check for numbers not in context
     fabricated_numbers = proposal_numbers - context_numbers
-    if len(fabricated_numbers) > 3:  # Allow some tolerance
+    if fabricated_numbers:
+        warnings.append(f"⚠️ Found pricing not in knowledge base: {', '.join(list(fabricated_numbers)[:3])}")
         confidence = "MEDIUM"
     
-    # Check for placeholder phrases
-    placeholders = [
-        "to be determined",
-        "will be provided",
-        "contact for pricing",
-        "based on requirements"
+    # Check for vague timeline promises not in context
+    timeline_patterns = [
+        r'\d+\s*(?:weeks?|months?|days?)\s*(?:timeline|duration|period)',
+        r'(?:within|in)\s*\d+\s*(?:weeks?|months?|days?)'
     ]
     
-    if any(phrase in text.lower() for phrase in placeholders):
-        confidence = "MEDIUM"
+    for pattern in timeline_patterns:
+        proposal_timelines = re.findall(pattern, proposal.lower())
+        context_timelines = re.findall(pattern, context.lower())
+        if proposal_timelines and not context_timelines:
+            warnings.append("⚠️ Timeline estimates not found in knowledge base")
+            confidence = "MEDIUM"
+            break
     
-    # Remove any remaining placeholder brackets
-    text = re.sub(r'\[Information[^\]]*\]', '', text)
-    text = re.sub(r'\[TBD\]', 'To be determined', text, flags=re.IGNORECASE)
+    # Check for generic tech stack mentions not in context
+    tech_terms = ['flutter', 'react', 'next.js', 'firebase', 'mongodb', 'mysql', 'aws', 'node.js']
+    proposal_lower = proposal.lower()
+    context_lower = context.lower()
     
-    # Clean up excessive whitespace
-    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    mentioned_tech = [tech for tech in tech_terms if tech in proposal_lower and tech not in context_lower]
+    if len(mentioned_tech) > 2:
+        warnings.append(f"⚠️ Technologies mentioned not in knowledge base: {', '.join(mentioned_tech)}")
+        confidence = "LOW"
     
-    return text, confidence
+    # Clean up any placeholder artifacts
+    cleaned = re.sub(r'\[.*?\]', '', proposal)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+    
+    return cleaned, confidence, warnings
 
 # ========== Routes ==========
 @app.get("/")
 def root():
     return {
         "status": "online",
-        "message": "✅ Proposal Generator ready",
-        "endpoints": ["/ask"],
-        "version": "2.0-improved"
+        "message": "✅ Enhanced Proposal Generator ready",
+        "endpoints": ["/ask", "/refresh-kb"],
+        "version": "3.0-anti-hallucination"
     }
 
 @app.post("/ask", response_model=AskResponse)
@@ -357,34 +364,51 @@ def ask(query: Query):
         intent = extract_intent_from_text(combined_text)
         requirements = format_requirements(intent, query)
         
-        # Retrieve more context with better search
+        # Retrieve MORE context with better search strategy
         retriever = vectorstore.as_retriever(
+            search_type="mmr",  # Maximum Marginal Relevance for diversity
             search_kwargs={
-                "k": 12,  # Increased from 8
-                 
+                "k": 15,  # Get more chunks
+                "fetch_k": 30,  # Consider more candidates
+                "lambda_mult": 0.7  # Balance relevance vs diversity
             }
         )
         related_docs = retriever.invoke(combined_text)
 
         if not related_docs:
             return {
-                "answer": "Unfortunately, I don't have sufficient information in the knowledge base to generate a proposal for this request. Please provide more details or contact AppSynergies directly at info@AppSynergies.com",
+                "answer": "Unfortunately, I don't have sufficient information in the knowledge base to generate a detailed proposal for this request. Please provide more specific details about your project requirements, or contact AppSynergies directly at info@appsynergies.com for a customized proposal.",
                 "extracted_intent": intent,
                 "confidence_score": "LOW"
             }
 
-        # Build context with document sources
-        context = "\n\n---\n\n".join(d.page_content for d in related_docs)
+        # Build comprehensive context
+        context = "\n\n---DOCUMENT SECTION---\n\n".join(d.page_content for d in related_docs)
         
-        # Generate proposal
-        prompt = proposal_prompt.format(context=context, requirements=requirements)
+        # Add explicit instruction about what's in context
+        context_summary = f"""
+AVAILABLE INFORMATION SUMMARY:
+- Number of relevant sections found: {len(related_docs)}
+- Context covers: {', '.join(set([doc.page_content.split()[0] for doc in related_docs[:5]]))}
+
+FULL CONTEXT:
+{context}
+"""
+        
+        # Generate proposal with enhanced context
+        prompt = proposal_prompt.format(context=context_summary, requirements=requirements)
         resp = llm.invoke(prompt)
         
-        # Validate and clean
-        cleaned_answer, confidence = validate_and_clean_proposal(
+        # Validate against context
+        cleaned_answer, confidence, warnings = validate_proposal_against_context(
             resp.content or "",
             context
         )
+        
+        # Add warnings to response if any
+        if warnings:
+            warning_section = "\n\n---\n**Validation Notes:**\n" + "\n".join(warnings)
+            cleaned_answer += warning_section
         
         return {
             "answer": cleaned_answer,
